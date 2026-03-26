@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 # JWT Refresher v3 - Burp Suite Extension
 #
 # A comprehensive extension to manage and auto-refresh JWT tokens during testing.
@@ -533,7 +534,7 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener):
         bc.gridwidth = 4
         bac_panel.add(JLabel(
             "<html><i>When enabled, ALL matching requests will have their token replaced "
-            "with the selected session's token — regardless of the original user.</i></html>"
+            "with the selected session's token -- regardless of the original user.</i></html>"
         ), bc)
 
         # Learned Sessions display
