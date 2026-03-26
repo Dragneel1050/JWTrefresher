@@ -10,9 +10,10 @@ from javax.swing import (
     JPanel, JLabel, JTextField, JTextArea, JScrollPane,
     JButton, JCheckBox, BorderFactory, SwingUtilities,
     JRadioButton, ButtonGroup, JComboBox, JSpinner,
-    SpinnerNumberModel
+    SpinnerNumberModel, JTabbedPane, JSplitPane, JSeparator
 )
-from java.awt import GridBagLayout, GridBagConstraints, Insets, FlowLayout
+from java.awt import GridBagLayout, GridBagConstraints, Insets, FlowLayout, BorderLayout, Dimension, Color
+import java.awt
 from java.net import URL, HttpURLConnection
 from java.io import OutputStreamWriter, BufferedReader, InputStreamReader
 from java.lang import Thread, Runnable, InterruptedException
@@ -153,84 +154,64 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener):
     # ===================================================================
 
     def _build_ui(self):
-        self._main_panel = JPanel(GridBagLayout())
-        c = GridBagConstraints()
-        c.insets = Insets(5, 5, 5, 5)
-        c.anchor = GridBagConstraints.NORTHWEST
-        c.fill = GridBagConstraints.HORIZONTAL
-        c.weightx = 1.0
-        c.gridx = 0
+        self._main_panel = JPanel(BorderLayout(0, 0))
 
-        # --- 1. Operating Mode ---
-        c.gridy = 0
-        c.weighty = 0
-        mode_panel = JPanel(FlowLayout(FlowLayout.LEFT))
-        mode_panel.setBorder(BorderFactory.createTitledBorder("1. Operating Mode"))
-        self.radio_active_mode = JRadioButton("Active Mode (Single Session)", True)
+        # --- Top Toolbar ---
+        toolbar = JPanel(FlowLayout(FlowLayout.LEFT, 10, 6))
+        toolbar.setBorder(BorderFactory.createCompoundBorder(
+            BorderFactory.createMatteBorder(0, 0, 1, 0, java.awt.Color.GRAY),
+            BorderFactory.createEmptyBorder(2, 5, 2, 5)
+        ))
+        self.radio_active_mode = JRadioButton("Active Mode", True)
         self.radio_active_mode.addActionListener(self._toggle_mode)
-        self.radio_passive_mode = JRadioButton("Passive Mode (Auto-Learning, Multi-Session)", False)
+        self.radio_passive_mode = JRadioButton("Passive Mode", False)
         self.radio_passive_mode.addActionListener(self._toggle_mode)
         grp = ButtonGroup()
         grp.add(self.radio_active_mode)
         grp.add(self.radio_passive_mode)
-        mode_panel.add(self.radio_active_mode)
-        mode_panel.add(self.radio_passive_mode)
-        self._main_panel.add(mode_panel, c)
-
-        # --- 2. Configuration ---
-        c.gridy = 1
-        self.config_panel = self._build_config_panel()
-        self._main_panel.add(self.config_panel, c)
-
-        # --- 3. Controls ---
-        c.gridy = 2
-        controls = JPanel(FlowLayout(FlowLayout.CENTER))
-        controls.setBorder(BorderFactory.createTitledBorder("Controls"))
-        self.btn_refresh = JButton("Get/Refresh Tokens (Active Mode)")
-        self.btn_refresh.addActionListener(self._on_refresh_click)
+        toolbar.add(self.radio_active_mode)
+        toolbar.add(self.radio_passive_mode)
+        toolbar.add(JSeparator(JSeparator.VERTICAL))
         self.chk_enabled = JCheckBox("Enable Token Handling", False)
-        controls.add(self.btn_refresh)
-        controls.add(self.chk_enabled)
-        self._main_panel.add(controls, c)
+        toolbar.add(self.chk_enabled)
+        toolbar.add(JSeparator(JSeparator.VERTICAL))
+        self.btn_refresh = JButton("Refresh Tokens (Active)")
+        self.btn_refresh.addActionListener(self._on_refresh_click)
+        toolbar.add(self.btn_refresh)
+        self._main_panel.add(toolbar, BorderLayout.NORTH)
 
-        # --- 4. Log & Token ---
-        c.gridy = 3
-        c.weighty = 1.0
-        c.fill = GridBagConstraints.BOTH
-        self._main_panel.add(self._build_log_panel(), c)
-
-        # --- 5. Last Transaction ---
-        c.gridy = 4
-        c.weighty = 1.0
-        self.transaction_panel = self._build_transaction_panel()
-        self._main_panel.add(self.transaction_panel, c)
-
-    def _build_config_panel(self):
-        panel = JPanel(GridBagLayout())
-        c = GridBagConstraints()
-        c.insets = Insets(2, 5, 2, 5)
-        c.anchor = GridBagConstraints.WEST
-        c.fill = GridBagConstraints.HORIZONTAL
-        c.weightx = 1.0
-        c.gridx = 0
-
-        c.gridy = 0
-        panel.add(self._build_common_config(), c)
-        c.gridy = 1
-        panel.add(self._build_extraction_config(), c)
-        c.gridy = 2
+        # --- Config Tabs (top half) ---
+        self.config_tabs = JTabbedPane()
+        self.config_tabs.addTab("Connection", JScrollPane(self._build_common_config()))
+        self.config_tabs.addTab("Extraction", JScrollPane(self._build_extraction_config()))
         self.active_mode_panel = self._build_active_config()
-        panel.add(self.active_mode_panel, c)
-        c.gridy = 3
+        self.config_tabs.addTab("Active Mode", JScrollPane(self.active_mode_panel))
         self.passive_mode_panel = self._build_passive_config()
-        panel.add(self.passive_mode_panel, c)
-        return panel
+        self.config_tabs.addTab("Passive & BAC", JScrollPane(self.passive_mode_panel))
+        self.config_panel = self.config_tabs  # for revalidate/repaint calls
+
+        # --- Output Tabs (bottom half) ---
+        self.output_tabs = JTabbedPane()
+        self.output_tabs.addTab("Log", self._build_log_tab())
+        self.output_tabs.addTab("Current Token", self._build_token_tab())
+        self.transaction_panel = self._build_transaction_panel()
+        self.output_tabs.addTab("Transaction", self.transaction_panel)
+
+        # --- Split Pane ---
+        split = JSplitPane(JSplitPane.VERTICAL_SPLIT, self.config_tabs, self.output_tabs)
+        split.setResizeWeight(0.45)
+        split.setOneTouchExpandable(True)
+        split.setDividerSize(8)
+        self._main_panel.add(split, BorderLayout.CENTER)
 
     # --- Common Config ---
 
     def _build_common_config(self):
         panel = JPanel(GridBagLayout())
-        panel.setBorder(BorderFactory.createTitledBorder("Common Configuration"))
+        panel.setBorder(BorderFactory.createCompoundBorder(
+            BorderFactory.createEmptyBorder(10, 10, 10, 10),
+            BorderFactory.createTitledBorder("Connection & Injection Settings")
+        ))
         cc = GridBagConstraints()
         cc.insets = Insets(2, 5, 2, 5)
         cc.anchor = GridBagConstraints.WEST
@@ -275,7 +256,10 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener):
 
     def _build_extraction_config(self):
         panel = JPanel(GridBagLayout())
-        panel.setBorder(BorderFactory.createTitledBorder("Response Token Extraction"))
+        panel.setBorder(BorderFactory.createCompoundBorder(
+            BorderFactory.createEmptyBorder(10, 10, 10, 10),
+            BorderFactory.createTitledBorder("Response Token Extraction")
+        ))
         ec = GridBagConstraints()
         ec.insets = Insets(2, 5, 2, 5)
         ec.anchor = GridBagConstraints.WEST
@@ -356,7 +340,10 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener):
 
     def _build_active_config(self):
         panel = JPanel(GridBagLayout())
-        panel.setBorder(BorderFactory.createTitledBorder("Active Mode Configuration"))
+        panel.setBorder(BorderFactory.createCompoundBorder(
+            BorderFactory.createEmptyBorder(10, 10, 10, 10),
+            BorderFactory.createTitledBorder("Active Mode Configuration")
+        ))
         ac = GridBagConstraints()
         ac.insets = Insets(2, 5, 2, 5)
         ac.anchor = GridBagConstraints.WEST
@@ -445,7 +432,10 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener):
 
     def _build_passive_config(self):
         panel = JPanel(GridBagLayout())
-        panel.setBorder(BorderFactory.createTitledBorder("Passive Mode Configuration"))
+        panel.setBorder(BorderFactory.createCompoundBorder(
+            BorderFactory.createEmptyBorder(10, 10, 10, 10),
+            BorderFactory.createTitledBorder("Passive Mode Configuration")
+        ))
         pc = GridBagConstraints()
         pc.insets = Insets(2, 5, 2, 5)
         pc.anchor = GridBagConstraints.WEST
@@ -554,50 +544,42 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener):
 
         return panel
 
-    # --- Log & Token Panel ---
+    # --- Log Tab ---
 
-    def _build_log_panel(self):
-        panel = JPanel(GridBagLayout())
-        panel.setBorder(BorderFactory.createTitledBorder("Log & Current Token"))
-        lc = GridBagConstraints()
-        lc.insets = Insets(2, 5, 2, 5)
-        lc.fill = GridBagConstraints.HORIZONTAL
-        lc.weightx = 0.5
-        lc.weighty = 0
-
-        lc.gridx = 0
-        lc.gridy = 0
-        self.lbl_log = JLabel("Log:")
-        panel.add(self.lbl_log, lc)
-        lc.gridx = 1
-        self.lbl_current_token = JLabel("Current Access Token (Active Mode):")
-        panel.add(self.lbl_current_token, lc)
-
-        lc.gridy = 1
-        lc.weighty = 1.0
-        lc.fill = GridBagConstraints.BOTH
-        lc.gridx = 0
-        self.txt_log = JTextArea(15, 25)
+    def _build_log_tab(self):
+        panel = JPanel(BorderLayout(5, 5))
+        panel.setBorder(BorderFactory.createEmptyBorder(5, 5, 5, 5))
+        self.lbl_log = JLabel("Extension Log:")
+        panel.add(self.lbl_log, BorderLayout.NORTH)
+        self.txt_log = JTextArea(15, 50)
         self.txt_log.setEditable(False)
         self.scroll_log = JScrollPane(self.txt_log)
-        panel.add(self.scroll_log, lc)
+        panel.add(self.scroll_log, BorderLayout.CENTER)
+        return panel
 
-        lc.gridx = 1
-        self.txt_access_token = JTextArea(15, 25)
+    # --- Token Tab ---
+
+    def _build_token_tab(self):
+        panel = JPanel(BorderLayout(5, 5))
+        panel.setBorder(BorderFactory.createEmptyBorder(5, 5, 5, 5))
+        self.lbl_current_token = JLabel("Current Access Token:")
+        panel.add(self.lbl_current_token, BorderLayout.NORTH)
+        self.txt_access_token = JTextArea(15, 50)
         self.txt_access_token.setEditable(False)
         self.txt_access_token.setLineWrap(True)
         self.txt_access_token.setWrapStyleWord(True)
         self.scroll_access_token = JScrollPane(self.txt_access_token)
-        panel.add(self.scroll_access_token, lc)
-
+        panel.add(self.scroll_access_token, BorderLayout.CENTER)
         return panel
 
     # --- Transaction Panel ---
 
     def _build_transaction_panel(self):
         panel = JPanel(GridBagLayout())
-        self.transaction_border = BorderFactory.createTitledBorder("Last Transaction")
-        panel.setBorder(self.transaction_border)
+        panel.setBorder(BorderFactory.createCompoundBorder(
+            BorderFactory.createEmptyBorder(5, 5, 5, 5),
+            BorderFactory.createTitledBorder("Last Transaction")
+        ))
         tc = GridBagConstraints()
         tc.insets = Insets(2, 5, 2, 5)
         tc.fill = GridBagConstraints.HORIZONTAL
@@ -631,25 +613,17 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener):
 
     def _toggle_mode(self, event):
         is_active = self.radio_active_mode.isSelected()
-        self.active_mode_panel.setVisible(is_active)
-        self.passive_mode_panel.setVisible(not is_active)
         self.btn_refresh.setEnabled(is_active)
-        self.lbl_current_token.setVisible(is_active)
-        self.scroll_access_token.setVisible(is_active)
-        self.transaction_panel.setVisible(is_active)
 
+        # Auto-switch to the relevant config tab
         if is_active:
-            self.transaction_border.setTitle("Last Active Transaction")
+            self.config_tabs.setSelectedIndex(2)  # "Active Mode" tab
             if event:
                 self._log("[INFO] Switched to Active Mode.")
         else:
-            self.transaction_border.setTitle("Last Passive Intercept")
+            self.config_tabs.setSelectedIndex(3)  # "Passive & BAC" tab
             if event:
                 self._log("[INFO] Switched to Passive Mode.")
-
-        self.config_panel.revalidate()
-        self.config_panel.repaint()
-        self.transaction_panel.repaint()
 
     def _toggle_extraction_mode(self, event):
         mode = str(self.cmb_extract_mode.getSelectedItem())
@@ -670,8 +644,11 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener):
         # String-JSON help text
         self.lbl_str_json_help.setVisible(is_str_json)
 
-        self.config_panel.revalidate()
-        self.config_panel.repaint()
+        # Revalidate the extraction tab
+        extraction_tab = self.config_tabs.getComponentAt(1)
+        if extraction_tab:
+            extraction_tab.revalidate()
+            extraction_tab.repaint()
 
         if event:
             self._log("[INFO] Extraction mode changed to: " + mode)
