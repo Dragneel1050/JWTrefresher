@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# JWT Refresher v3 - Burp Suite Extension
+# JWT Refresher v3.1 - Burp Suite Extension
 #
 # A comprehensive extension to manage and auto-refresh JWT tokens during testing.
 # Supports multiple response parsing modes (JSON Path, Regex, String-Escaped JSON),
@@ -10,9 +10,9 @@ from javax.swing import (
     JPanel, JLabel, JTextField, JTextArea, JScrollPane,
     JButton, JCheckBox, BorderFactory, SwingUtilities,
     JRadioButton, ButtonGroup, JComboBox, JSpinner,
-    SpinnerNumberModel, JTabbedPane, JSplitPane, JSeparator
+    SpinnerNumberModel, JTabbedPane, JSplitPane, Box
 )
-from java.awt import GridBagLayout, GridBagConstraints, Insets, FlowLayout, BorderLayout, Dimension, Color
+from java.awt import GridBagLayout, GridBagConstraints, Insets, FlowLayout, BorderLayout, Dimension, Color, CardLayout, Font
 import java.awt
 from java.net import URL, HttpURLConnection
 from java.io import OutputStreamWriter, BufferedReader, InputStreamReader
@@ -54,7 +54,7 @@ class _AutoRefreshRunnable(Runnable):
                         buffer_sec = int(self.ext.spn_expiry_buffer.getValue())
                         time_left = expiry - now
                         if 0 < time_left <= buffer_sec:
-                            self.ext.log("[AUTO] Token expires in {}s. Refreshing...".format(time_left))
+                            self.ext._log("[AUTO] Token expires in {}s. Refreshing...".format(time_left))
                             self.ext.refresh_tokens()
                             continue
 
@@ -65,21 +65,21 @@ class _AutoRefreshRunnable(Runnable):
                     if last_time > 0:
                         interval_sec = int(self.ext.spn_interval_minutes.getValue()) * 60
                         if (now - last_time) >= interval_sec:
-                            self.ext.log("[AUTO] Interval ({}min) reached. Refreshing...".format(interval_sec / 60))
+                            self.ext._log("[AUTO] Interval ({}min) reached. Refreshing...".format(interval_sec // 60))
                             self.ext.refresh_tokens()
 
             except InterruptedException:
                 break
             except Exception as e:
                 try:
-                    self.ext.log("[ERROR] Auto-refresh thread: " + str(e))
+                    self.ext._log("[ERROR] Auto-refresh thread: " + str(e))
                 except:
                     pass
 
 
 class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener):
     """
-    JWT Refresher v3 - Manages JWT token lifecycle during Burp Suite testing.
+    JWT Refresher v3.1 - Manages JWT token lifecycle during Burp Suite testing.
 
     Modes:
       Active  - Single session, manual or auto refresh via HTTP endpoint.
@@ -114,7 +114,7 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener):
     def registerExtenderCallbacks(self, callbacks):
         self._callbacks = callbacks
         self._helpers = callbacks.getHelpers()
-        callbacks.setExtensionName("JWT Refresher v3")
+        callbacks.setExtensionName("JWT Refresher v3.1")
 
         # --- State ---
         self.active_access_token = None
@@ -122,6 +122,7 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener):
         self._running = True
         self._last_token_time = 0
         self._token_expiry = 0
+        self._max_log_lines = 2000  # Prevent unbounded log growth
 
         # --- Locks ---
         self._token_lock = Lock()
@@ -132,22 +133,27 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener):
         self._build_ui()
         self._toggle_mode(None)
         self._toggle_extraction_mode(None)
+        # Initialize BAC controls as disabled (BAC starts unchecked)
+        self._toggle_bac_controls(None)
 
         # --- Register ---
         callbacks.addSuiteTab(self)
         callbacks.registerHttpListener(self)
         callbacks.registerExtensionStateListener(self)
 
+        # --- Apply Burp's look and feel to our UI ---
+        callbacks.customizeUiComponent(self._main_panel)
+
         # --- Start auto-refresh daemon ---
         t = Thread(_AutoRefreshRunnable(self))
         t.setDaemon(True)
         t.start()
 
-        self._log("[INFO] JWT Refresher v3 loaded successfully.")
+        self._log("[INFO] JWT Refresher v3.1 loaded successfully.")
 
     def extensionUnloaded(self):
         self._running = False
-        self._log("[INFO] JWT Refresher v3 unloaded.")
+        self._log("[INFO] JWT Refresher v3.1 unloaded.")
 
     # ===================================================================
     # UI BUILDING
@@ -171,10 +177,17 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener):
         grp.add(self.radio_passive_mode)
         toolbar.add(self.radio_active_mode)
         toolbar.add(self.radio_passive_mode)
-        toolbar.add(JSeparator(JSeparator.VERTICAL))
+
+        # Visible separator (FlowLayout doesn't give JSeparator height)
+        sep1 = Box.createRigidArea(Dimension(1, 20))
+        toolbar.add(sep1)
+
         self.chk_enabled = JCheckBox("Enable Token Handling", False)
         toolbar.add(self.chk_enabled)
-        toolbar.add(JSeparator(JSeparator.VERTICAL))
+
+        sep2 = Box.createRigidArea(Dimension(1, 20))
+        toolbar.add(sep2)
+
         self.btn_refresh = JButton("Refresh Tokens (Active)")
         self.btn_refresh.addActionListener(self._on_refresh_click)
         toolbar.add(self.btn_refresh)
@@ -255,86 +268,138 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener):
     # --- Extraction Config ---
 
     def _build_extraction_config(self):
-        panel = JPanel(GridBagLayout())
-        panel.setBorder(BorderFactory.createCompoundBorder(
+        """Build extraction config using CardLayout to cleanly switch between modes."""
+        outer = JPanel(GridBagLayout())
+        outer.setBorder(BorderFactory.createCompoundBorder(
             BorderFactory.createEmptyBorder(10, 10, 10, 10),
             BorderFactory.createTitledBorder("Response Token Extraction")
         ))
+        self._extraction_panel = outer  # Store reference for revalidation
+
         ec = GridBagConstraints()
-        ec.insets = Insets(2, 5, 2, 5)
+        ec.insets = Insets(4, 5, 4, 5)
         ec.anchor = GridBagConstraints.WEST
         ec.fill = GridBagConstraints.HORIZONTAL
         ec.weightx = 1.0
 
-        # Mode selector
+        # Mode selector row
         ec.gridx = 0
         ec.gridy = 0
         ec.gridwidth = 1
-        panel.add(JLabel("Extraction Mode:"), ec)
+        outer.add(JLabel("Extraction Mode:"), ec)
         ec.gridx = 1
         ec.gridwidth = 3
         self.cmb_extract_mode = JComboBox([self.MODE_JSON_PATH, self.MODE_REGEX, self.MODE_STRING_JSON])
         self.cmb_extract_mode.addActionListener(self._toggle_extraction_mode)
-        panel.add(self.cmb_extract_mode, ec)
+        outer.add(self.cmb_extract_mode, ec)
 
-        # --- JSON Path fields (shared with String-JSON) ---
-        ec.gridy = 1
-        ec.gridx = 0
-        ec.gridwidth = 1
-        self.lbl_jp_access = JLabel("Access Token JSON Path:")
-        panel.add(self.lbl_jp_access, ec)
-        ec.gridx = 1
+        # --- CardLayout container for mode-specific fields ---
+        self._extract_card_layout = CardLayout()
+        self._extract_cards = JPanel(self._extract_card_layout)
+
+        # Card 1: JSON Path
+        json_card = JPanel(GridBagLayout())
+        jc = GridBagConstraints()
+        jc.insets = Insets(4, 5, 4, 5)
+        jc.anchor = GridBagConstraints.WEST
+        jc.fill = GridBagConstraints.HORIZONTAL
+        jc.weightx = 1.0
+
+        jc.gridx = 0
+        jc.gridy = 0
+        jc.gridwidth = 1
+        json_card.add(JLabel("Access Token JSON Path:"), jc)
+        jc.gridx = 1
         self.txt_resp_access_name = JTextField("jwt.token")
-        panel.add(self.txt_resp_access_name, ec)
-        ec.gridx = 2
-        self.lbl_jp_refresh = JLabel("Refresh Token JSON Path (Active only):")
-        panel.add(self.lbl_jp_refresh, ec)
-        ec.gridx = 3
+        json_card.add(self.txt_resp_access_name, jc)
+        jc.gridx = 2
+        json_card.add(JLabel("Refresh Token JSON Path (Active only):"), jc)
+        jc.gridx = 3
         self.txt_resp_refresh_name = JTextField("jwt.refresh_token")
-        panel.add(self.txt_resp_refresh_name, ec)
+        json_card.add(self.txt_resp_refresh_name, jc)
 
-        # --- Regex fields ---
-        ec.gridy = 2
-        ec.gridx = 0
-        ec.gridwidth = 4
-        self.lbl_regex_help = JLabel(
+        self._extract_cards.add(json_card, self.MODE_JSON_PATH)
+
+        # Card 2: Regex Pattern
+        regex_card = JPanel(GridBagLayout())
+        rc = GridBagConstraints()
+        rc.insets = Insets(4, 5, 4, 5)
+        rc.anchor = GridBagConstraints.WEST
+        rc.fill = GridBagConstraints.HORIZONTAL
+        rc.weightx = 1.0
+
+        rc.gridx = 0
+        rc.gridy = 0
+        rc.gridwidth = 4
+        regex_card.add(JLabel(
             "<html><i>Use a capture group <b>()</b> around the token value. "
             "Example: <code>\"JWTToken\"\\s*:\\s*\"([^\"]+)\"</code></i></html>"
-        )
-        panel.add(self.lbl_regex_help, ec)
+        ), rc)
 
-        ec.gridy = 3
-        ec.gridx = 0
-        ec.gridwidth = 1
-        self.lbl_rx_access = JLabel("Access Token Regex:")
-        panel.add(self.lbl_rx_access, ec)
-        ec.gridx = 1
-        ec.gridwidth = 3
+        rc.gridy = 1
+        rc.gridx = 0
+        rc.gridwidth = 1
+        regex_card.add(JLabel("Access Token Regex:"), rc)
+        rc.gridx = 1
+        rc.gridwidth = 3
         self.txt_regex_access = JTextField('"access_token"\\s*:\\s*"([^"]+)"')
-        panel.add(self.txt_regex_access, ec)
+        regex_card.add(self.txt_regex_access, rc)
 
-        ec.gridy = 4
-        ec.gridx = 0
-        ec.gridwidth = 1
-        self.lbl_rx_refresh = JLabel("Refresh Token Regex (Active only):")
-        panel.add(self.lbl_rx_refresh, ec)
-        ec.gridx = 1
-        ec.gridwidth = 3
+        rc.gridy = 2
+        rc.gridx = 0
+        rc.gridwidth = 1
+        regex_card.add(JLabel("Refresh Token Regex (Active only):"), rc)
+        rc.gridx = 1
+        rc.gridwidth = 3
         self.txt_regex_refresh = JTextField('"refresh_token"\\s*:\\s*"([^"]+)"')
-        panel.add(self.txt_regex_refresh, ec)
+        regex_card.add(self.txt_regex_refresh, rc)
 
-        # --- String-JSON help ---
-        ec.gridy = 5
-        ec.gridx = 0
-        ec.gridwidth = 4
-        self.lbl_str_json_help = JLabel(
+        self._extract_cards.add(regex_card, self.MODE_REGEX)
+
+        # Card 3: String-Escaped JSON (reuses JSON Path fields via shared references)
+        str_json_card = JPanel(GridBagLayout())
+        sc = GridBagConstraints()
+        sc.insets = Insets(4, 5, 4, 5)
+        sc.anchor = GridBagConstraints.WEST
+        sc.fill = GridBagConstraints.HORIZONTAL
+        sc.weightx = 1.0
+
+        sc.gridx = 0
+        sc.gridy = 0
+        sc.gridwidth = 1
+        str_json_card.add(JLabel("Access Token JSON Path:"), sc)
+        sc.gridx = 1
+        self.txt_str_json_access_name = JTextField("jwt.token")
+        str_json_card.add(self.txt_str_json_access_name, sc)
+        sc.gridx = 2
+        str_json_card.add(JLabel("Refresh Token JSON Path (Active only):"), sc)
+        sc.gridx = 3
+        self.txt_str_json_refresh_name = JTextField("jwt.refresh_token")
+        str_json_card.add(self.txt_str_json_refresh_name, sc)
+
+        sc.gridy = 1
+        sc.gridx = 0
+        sc.gridwidth = 4
+        str_json_card.add(JLabel(
             '<html><i>String-Escaped JSON: For responses like '
             '<code>"{\\\"key\\\":\\\"val\\\"}"</code>. '
             'Auto-unescapes first, then uses JSON Path above.</i></html>'
-        )
-        panel.add(self.lbl_str_json_help, ec)
+        ), sc)
 
-        return panel
+        self._extract_cards.add(str_json_card, self.MODE_STRING_JSON)
+
+        # Add card panel to outer
+        ec.gridy = 1
+        ec.gridx = 0
+        ec.gridwidth = 4
+        outer.add(self._extract_cards, ec)
+
+        # Push remaining space down
+        ec.gridy = 2
+        ec.weighty = 1.0
+        outer.add(JPanel(), ec)
+
+        return outer
 
     # --- Active Mode Config ---
 
@@ -411,18 +476,30 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener):
         ac.gridy = 6
         ac.gridx = 0
         ac.gridwidth = 4
-        auto_panel = JPanel(FlowLayout(FlowLayout.LEFT, 5, 2))
+        auto_panel = JPanel(GridBagLayout())
         auto_panel.setBorder(BorderFactory.createTitledBorder("Auto-Refresh Scheduling"))
+        ap = GridBagConstraints()
+        ap.insets = Insets(3, 5, 3, 5)
+        ap.anchor = GridBagConstraints.WEST
+        ap.fill = GridBagConstraints.NONE
 
+        ap.gridx = 0
+        ap.gridy = 0
         self.chk_auto_refresh_expiry = JCheckBox("Refresh before JWT expiry, buffer (seconds):", False)
-        auto_panel.add(self.chk_auto_refresh_expiry)
+        auto_panel.add(self.chk_auto_refresh_expiry, ap)
+        ap.gridx = 1
         self.spn_expiry_buffer = JSpinner(SpinnerNumberModel(30, 5, 600, 5))
-        auto_panel.add(self.spn_expiry_buffer)
+        self.spn_expiry_buffer.setPreferredSize(Dimension(80, 25))
+        auto_panel.add(self.spn_expiry_buffer, ap)
 
+        ap.gridx = 0
+        ap.gridy = 1
         self.chk_auto_refresh_interval = JCheckBox("Fixed interval refresh every (minutes):", False)
-        auto_panel.add(self.chk_auto_refresh_interval)
+        auto_panel.add(self.chk_auto_refresh_interval, ap)
+        ap.gridx = 1
         self.spn_interval_minutes = JSpinner(SpinnerNumberModel(5, 1, 120, 1))
-        auto_panel.add(self.spn_interval_minutes)
+        self.spn_interval_minutes.setPreferredSize(Dimension(80, 25))
+        auto_panel.add(self.spn_interval_minutes, ap)
 
         panel.add(auto_panel, ac)
 
@@ -462,7 +539,8 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener):
         # --- BAC Testing Sub-Panel ---
         pc.gridy = 3
         pc.gridwidth = 2
-        pc.fill = GridBagConstraints.HORIZONTAL
+        pc.fill = GridBagConstraints.BOTH
+        pc.weighty = 1.0
         bac_panel = JPanel(GridBagLayout())
         bac_panel.setBorder(BorderFactory.createTitledBorder(
             "BAC Testing (Broken Access Control)"
@@ -480,6 +558,7 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener):
         self.chk_bac_enabled = JCheckBox(
             "Enable BAC Testing - Inject a different user's token into requests", False
         )
+        self.chk_bac_enabled.addActionListener(self._toggle_bac_controls)
         bac_panel.add(self.chk_bac_enabled, bc)
 
         # Inject As dropdown
@@ -553,6 +632,9 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener):
         panel.add(self.lbl_log, BorderLayout.NORTH)
         self.txt_log = JTextArea(15, 50)
         self.txt_log.setEditable(False)
+        self.txt_log.setLineWrap(True)
+        self.txt_log.setWrapStyleWord(True)
+        self.txt_log.setFont(Font("Monospaced", Font.PLAIN, 12))
         self.scroll_log = JScrollPane(self.txt_log)
         panel.add(self.scroll_log, BorderLayout.CENTER)
         return panel
@@ -598,11 +680,13 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener):
         tc.gridx = 0
         self.txt_last_request = JTextArea(15, 25)
         self.txt_last_request.setEditable(False)
+        self.txt_last_request.setFont(Font("Monospaced", Font.PLAIN, 12))
         panel.add(JScrollPane(self.txt_last_request), tc)
 
         tc.gridx = 1
         self.txt_last_response = JTextArea(15, 25)
         self.txt_last_response.setEditable(False)
+        self.txt_last_response.setFont(Font("Monospaced", Font.PLAIN, 12))
         panel.add(JScrollPane(self.txt_last_response), tc)
 
         return panel
@@ -627,31 +711,25 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener):
 
     def _toggle_extraction_mode(self, event):
         mode = str(self.cmb_extract_mode.getSelectedItem())
-        is_json = (mode == self.MODE_JSON_PATH)
-        is_regex = (mode == self.MODE_REGEX)
-        is_str_json = (mode == self.MODE_STRING_JSON)
 
-        # JSON Path fields (visible for JSON Path AND String-Escaped JSON)
-        for comp in [self.lbl_jp_access, self.txt_resp_access_name,
-                     self.lbl_jp_refresh, self.txt_resp_refresh_name]:
-            comp.setVisible(is_json or is_str_json)
+        # Switch to the correct card
+        self._extract_card_layout.show(self._extract_cards, mode)
 
-        # Regex fields
-        for comp in [self.lbl_regex_help, self.lbl_rx_access, self.txt_regex_access,
-                     self.lbl_rx_refresh, self.txt_regex_refresh]:
-            comp.setVisible(is_regex)
-
-        # String-JSON help text
-        self.lbl_str_json_help.setVisible(is_str_json)
-
-        # Revalidate the extraction tab
-        extraction_tab = self.config_tabs.getComponentAt(1)
-        if extraction_tab:
-            extraction_tab.revalidate()
-            extraction_tab.repaint()
+        # Revalidate the extraction panel (not the JScrollPane wrapper)
+        self._extraction_panel.revalidate()
+        self._extraction_panel.repaint()
 
         if event:
             self._log("[INFO] Extraction mode changed to: " + mode)
+
+    def _toggle_bac_controls(self, event):
+        """Enable/disable BAC child controls based on the enable checkbox."""
+        enabled = self.chk_bac_enabled.isSelected()
+        self.cmb_bac_inject_as.setEnabled(enabled)
+        self.btn_bac_refresh.setEnabled(enabled)
+        self.radio_bac_repeater.setEnabled(enabled)
+        self.radio_bac_all.setEnabled(enabled)
+        self.radio_bac_all_no_proxy.setEnabled(enabled)
 
     # ===================================================================
     # UI HELPERS
@@ -661,7 +739,21 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener):
         SwingUtilities.invokeLater(lambda: component.setText(text))
 
     def _append_log_ui(self, message):
-        SwingUtilities.invokeLater(lambda: self.txt_log.append(message + "\n"))
+        def _do_append():
+            self.txt_log.append(message + "\n")
+            # Auto-scroll to bottom
+            self.txt_log.setCaretPosition(self.txt_log.getDocument().getLength())
+            # Trim old log entries to prevent memory leak
+            doc = self.txt_log.getDocument()
+            text_content = self.txt_log.getText()
+            lines = text_content.split("\n")
+            if len(lines) > self._max_log_lines:
+                trim_count = len(lines) - self._max_log_lines
+                trim_offset = 0
+                for i in range(trim_count):
+                    trim_offset = text_content.index("\n", trim_offset) + 1
+                doc.remove(0, trim_offset)
+        SwingUtilities.invokeLater(_do_append)
 
     def _log(self, message):
         ts = time.strftime("%H:%M:%S", time.localtime())
@@ -705,7 +797,13 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener):
             elif mode == self.MODE_STRING_JSON:
                 # First parse: the response is a JSON string containing escaped JSON
                 outer = json.loads(response_body)
-                if isinstance(outer, basestring):
+                # Compatible with both Jython 2.7 (basestring) and Python 3 (str)
+                _str_types = (str,)
+                try:
+                    _str_types = (str, unicode)
+                except NameError:
+                    pass
+                if isinstance(outer, _str_types):
                     # Second parse: unescape to get the actual JSON object
                     inner = json.loads(outer)
                     return self._get_nested_key(inner, key_or_pattern)
@@ -723,6 +821,8 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener):
         mode = str(self.cmb_extract_mode.getSelectedItem())
         if mode == self.MODE_REGEX:
             return self.txt_regex_access.getText()
+        elif mode == self.MODE_STRING_JSON:
+            return self.txt_str_json_access_name.getText()
         else:
             return self.txt_resp_access_name.getText()
 
@@ -731,6 +831,8 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener):
         mode = str(self.cmb_extract_mode.getSelectedItem())
         if mode == self.MODE_REGEX:
             return self.txt_regex_refresh.getText()
+        elif mode == self.MODE_STRING_JSON:
+            return self.txt_str_json_refresh_name.getText()
         else:
             return self.txt_resp_refresh_name.getText()
 
@@ -782,7 +884,9 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener):
 
     def _on_refresh_click(self, event):
         self._log("[INFO] Manual refresh triggered.")
-        Thread(lambda: self.refresh_tokens()).start()
+        t = Thread(lambda: self.refresh_tokens())
+        t.setDaemon(True)
+        t.start()
 
     def _on_clear_cache(self, event):
         with self._cache_lock:
@@ -804,11 +908,12 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener):
             self._log("[INFO] Refresh already in progress. Skipping.")
             return
 
-        self._update_ui(self.txt_last_request, "")
-        self._update_ui(self.txt_last_response, "Preparing request...")
-
+        # Lock was acquired — make sure we always release it
         conn = None
         try:
+            self._update_ui(self.txt_last_request, "")
+            self._update_ui(self.txt_last_response, "Preparing request...")
+
             endpoint_url_str = self.txt_endpoint.getText().strip()
             current_refresh_token = self.txt_refresh_token.getText().strip()
             req_refresh_name = self.txt_req_refresh_name.getText().strip()
@@ -841,7 +946,9 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener):
                     val = val.strip()
                     if val == '{{timestamp}}':
                         val = int(time.time())
-                    if key and key not in body_dict:
+                    if key:
+                        if key in body_dict:
+                            self._log("[WARN] Custom body key '{}' conflicts with existing key, overriding.".format(key))
                         body_dict[key] = val
             request_body_str = json.dumps(body_dict)
 
@@ -883,8 +990,13 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener):
 
             stream = conn.getInputStream() if response_code < 400 else conn.getErrorStream()
             reader = BufferedReader(InputStreamReader(stream))
-            response_body = "\n".join(iter(reader.readLine, None))
+            response_lines = []
+            line = reader.readLine()
+            while line is not None:
+                response_lines.append(line)
+                line = reader.readLine()
             reader.close()
+            response_body = "\n".join(response_lines)
 
             # Display raw response
             raw_resp = "HTTP/1.1 {} {}\n".format(response_code, conn.getResponseMessage() or "")
@@ -947,7 +1059,7 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener):
 
             if self._token_expiry > 0:
                 remaining = self._token_expiry - int(time.time())
-                self._log("  Expires:  in {}s (~{} min)".format(remaining, remaining / 60))
+                self._log("  Expires:  in {}s (~{} min)".format(remaining, remaining // 60))
 
             if new_refresh and self.radio_active_mode.isSelected():
                 self._update_ui(self.txt_refresh_token, new_refresh)
@@ -1118,7 +1230,9 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener):
             body_str = self._helpers.bytesToString(body_bytes)
             if trigger_text in body_str:
                 self._log("[AUTO-REFRESH] Trigger text '{}' found.".format(trigger_text))
-                Thread(lambda: self.refresh_tokens()).start()
+                t = Thread(lambda: self.refresh_tokens())
+                t.setDaemon(True)
+                t.start()
         except Exception as e:
             self._log("[ERROR] Active response check failed: " + str(e))
 
@@ -1231,13 +1345,25 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener):
         return summary
 
     def _extract_token_from_header(self, headers):
-        """Extract the existing token from the injection header in request headers."""
+        """Extract the existing token from the injection header in request headers.
+
+        Uses the configured header value template to strip the prefix/suffix,
+        so it works with any auth scheme (Bearer, Token, Basic, etc.).
+        """
         target = self.txt_inject_header_name.getText().strip().lower()
+        value_template = self.txt_inject_header_value.getText().strip()
         for header in headers:
             if header.lower().startswith(target + ":"):
                 value = header.split(":", 1)[1].strip()
-                if value.lower().startswith("bearer "):
-                    value = value[7:]
+                # Use the template to intelligently strip the prefix/suffix
+                if '{{token}}' in value_template:
+                    parts = value_template.split('{{token}}')
+                    prefix = parts[0].strip() if parts[0] else ""
+                    suffix = parts[1].strip() if len(parts) > 1 and parts[1] else ""
+                    if prefix and value.lower().startswith(prefix.lower()):
+                        value = value[len(prefix):].strip()
+                    if suffix and value.lower().endswith(suffix.lower()):
+                        value = value[:-len(suffix)].strip()
                 return value
         return None
 

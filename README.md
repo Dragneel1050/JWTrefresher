@@ -234,7 +234,33 @@ JWTToken":"eyJhbGciOiJ...",refreshtoken":""}
 
 ## 📋 Changelog
 
-### v3.0 (Current)
+### v3.1 (Current)
+
+**Critical Bug Fixes:**
+- Fixed auto-refresh thread crash — was calling non-existent `log()` instead of `_log()`, meaning auto-refresh silently broke on first tick
+- Fixed thread-unsafe `_refresh_lock.release()` in `finally` block — releasing a lock that was never acquired caused `RuntimeError` race conditions
+- Fixed `basestring` compatibility — String-Escaped JSON mode now works across Jython 2.7 and Python 3 environments
+- Fixed response body reading — replaced fragile `iter(reader.readLine, None)` with explicit loop for reliable Jython stream handling
+
+**UI Overhaul:**
+- Replaced `setVisible()` extraction mode switching with **CardLayout** — eliminates blank gaps when switching between JSON Path / Regex / String-Escaped JSON
+- Added **Burp Suite look-and-feel** integration via `customizeUiComponent()` — tab now matches Burp's theme (dark mode, font scaling)
+- Added **monospace fonts** to Log, Transaction Request, and Transaction Response areas for readable structured output
+- BAC child controls (dropdown, radio buttons, refresh button) now **auto-disable** when BAC Testing is unchecked
+- Auto-Refresh Scheduling panel restructured with **GridBagLayout** — expiry and interval options each get their own row, no more awkward wrapping
+- BAC sub-panel now properly **stretches vertically** to fill available space
+- Replaced invisible `JSeparator` in toolbar with proper `Box.createRigidArea` spacers
+- Log area now has **line wrap** enabled — no more horizontal scrolling
+
+**Quality Improvements:**
+- Log area auto-scrolls to bottom on new entries
+- Log area auto-trims at 2000 lines to prevent memory leak in long sessions
+- Integer division for clean log output (`5 min` instead of `5.0 min`)
+- Custom body parameters now log a `[WARN]` on duplicate keys instead of silently skipping
+- `_extract_token_from_header` now uses the configured header template to strip prefixes — works with any auth scheme (Bearer, Token, Basic, etc.)
+- All manual refresh threads marked as daemon — won't block extension unload
+
+### v3.0
 - Three extraction modes (JSON Path, Regex, String-Escaped JSON)
 - BAC Testing Mode with session selection and tool-specific control
 - Auto-refresh based on JWT `exp` claim
