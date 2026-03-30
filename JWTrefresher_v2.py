@@ -331,10 +331,12 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener):
         rc.gridx = 0
         rc.gridy = 0
         rc.gridwidth = 4
-        regex_card.add(JLabel(
-            "<html><i>Use a capture group <b>()</b> around the token value. "
-            "Example: <code>\"JWTToken\"\\s*:\\s*\"([^\"]+)\"</code></i></html>"
-        ), rc)
+        _regex_help = JLabel(
+            "Tip: Use a capture group () around the token value. "
+            "Example: \"JWTToken\"\\s*:\\s*\"([^\"]+)\""
+        )
+        _regex_help.setFont(_regex_help.getFont().deriveFont(Font.ITALIC))
+        regex_card.add(_regex_help, rc)
 
         rc.gridy = 1
         rc.gridx = 0
@@ -380,11 +382,12 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener):
         sc.gridy = 1
         sc.gridx = 0
         sc.gridwidth = 4
-        str_json_card.add(JLabel(
-            '<html><i>String-Escaped JSON: For responses like '
-            '<code>"{\\\"key\\\":\\\"val\\\"}"</code>. '
-            'Auto-unescapes first, then uses JSON Path above.</i></html>'
-        ), sc)
+        _str_json_help = JLabel(
+            'String-Escaped JSON: For responses like "{\\"key\\":\\"val\\"}" -- '
+            'Auto-unescapes first, then uses JSON Path above.'
+        )
+        _str_json_help.setFont(_str_json_help.getFont().deriveFont(Font.ITALIC))
+        str_json_card.add(_str_json_help, sc)
 
         self._extract_cards.add(str_json_card, self.MODE_STRING_JSON)
 
@@ -601,10 +604,12 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener):
         bc.gridy = 3
         bc.gridx = 0
         bc.gridwidth = 4
-        bac_panel.add(JLabel(
-            "<html><i>When enabled, ALL matching requests will have their token replaced "
-            "with the selected session's token -- regardless of the original user.</i></html>"
-        ), bc)
+        _bac_help = JLabel(
+            "When enabled, ALL matching requests will have their token replaced "
+            "with the selected session's token -- regardless of the original user."
+        )
+        _bac_help.setFont(_bac_help.getFont().deriveFont(Font.ITALIC))
+        bac_panel.add(_bac_help, bc)
 
         # Learned Sessions display
         bc.gridy = 4
