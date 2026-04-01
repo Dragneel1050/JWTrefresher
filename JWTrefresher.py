@@ -118,10 +118,12 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener):
 
         # --- State ---
         self.active_access_token = None
+        self.active_refresh_token = None
         self.token_cache = {}
         self._running = True
         self._last_token_time = 0
         self._token_expiry = 0
+        self._last_refresh_attempt = 0
         self._max_log_lines = 2000  # Prevent unbounded log growth
 
         # --- Locks ---
@@ -913,6 +915,15 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener):
             self._log("[INFO] Refresh already in progress. Skipping.")
             return
 
+        # Cooldown check: prevent bursting from rapid expired responses
+        now = int(time.time())
+        if now - self._last_refresh_attempt < 10:
+            self._log("[INFO] Refresh cooldown active (< 10s since last attempt). Skipping.")
+            self._refresh_lock.release()
+            return
+            
+        self._last_refresh_attempt = now
+
         # Lock was acquired — make sure we always release it
         conn = None
         try:
@@ -920,7 +931,13 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener):
             self._update_ui(self.txt_last_response, "Preparing request...")
 
             endpoint_url_str = self.txt_endpoint.getText().strip()
-            current_refresh_token = self.txt_refresh_token.getText().strip()
+            
+            with self._token_lock:
+                current_refresh_token = getattr(self, 'active_refresh_token', None)
+            
+            if not current_refresh_token:
+                current_refresh_token = self.txt_refresh_token.getText().strip()
+                
             req_refresh_name = self.txt_req_refresh_name.getText().strip()
 
             if not all([endpoint_url_str, current_refresh_token, req_refresh_name]):
@@ -1015,6 +1032,9 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener):
 
             if response_code >= 400:
                 self._log("[ERROR] Server returned error status: " + str(response_code))
+                if response_code in (400, 401, 403):
+                    self._log("[CRITICAL] Token endpoint rejected refresh. Disabling extension to prevent session lockout!")
+                    SwingUtilities.invokeLater(lambda: self.chk_enabled.setSelected(False))
                 return
 
             self._parse_and_set_tokens(response_body)
@@ -1055,6 +1075,8 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IExtensionStateListener):
                 self.active_access_token = new_access
                 self._last_token_time = int(time.time())
                 self._token_expiry = self._get_jwt_expiry(new_access)
+                if new_refresh and self.radio_active_mode.isSelected():
+                    self.active_refresh_token = new_refresh
 
             self._update_ui(self.txt_access_token, new_access)
             identity = self._jwt_identity_summary(new_access)
